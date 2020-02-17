@@ -66,7 +66,8 @@ def create_folders(vpath):
         os.makedirs("./data/" + vid + "/data")
         os.makedirs("./data/" + vid + "/detbbox")
         os.makedirs("./data/" + vid + "/groundtruth")
-        os.makedirs("./data/" + vid + "/"+ now)
+        os.makedirs("./data/" + vid + "/tracker_prediction")
+        os.makedirs("./data/" + vid + "/tracker_prediction/" + now)
     else:
         os.makedirs("./data/" + vid + "/"+ now)
     return now
@@ -140,6 +141,17 @@ def det_bbox(det_method, vpath):
         det = det.flatten()
         #create_txt(arr_str(det), vpath, det_method.__name__)
         create_txt(arr_str(det), video_path(extract_name(vpath)) + "/detbbox", "geg")
+
+def write_bbox(cla, conf, bbox):
+
+
+
+
+def read_bbox(txt_path):
+
+
+    return cla, conf, bbox
+
 
 
 # def det_yolo(vpath): maybe in here??
