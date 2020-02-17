@@ -78,10 +78,16 @@ def create_txt(text, path, name):
     with open(path + "/" + name + ".txt", "a") as file:
         file.write(text + "\n")
 
+#ugly
 def arr_str(arr):
     text = ""
-    for i in range(len(arr)):
-        text = text + str(arr[i]) + " "
+    if len(arr.shape)==1:
+        for i in range(len(arr)):
+            text = text + str(arr[i]) + " "
+    else:
+        for i in range(len(arr)):
+            for j in range(len(arr[0])):
+                text = text + str(arr[i][j]) + " "
     return text
 
 
@@ -97,7 +103,7 @@ def get_total_frames(vpath):
 
 # make single methods for yolo detection and for slef labeling(ground truth), otherwise folder seletion isdifficult
 
-def self_label(vpath):
+def self_label(vpath, cla):
     savepath = video_path(extract_name(vpath))
     print("test")
     for i in range(get_total_frames(vpath)):
@@ -107,6 +113,7 @@ def self_label(vpath):
         bbox = cv2.selectROI(frame)
         bbox = np.array(bbox)
         bbox = np.insert(bbox,0,1)
+        bbox = np.insert(bbox,0,cla)
         bbox = np.insert(bbox,0,i)
         create_txt((arr_str(bbox)),savepath + "/groundtruth","label")
         print(bbox)
@@ -153,6 +160,8 @@ if __name__ == "__main__":
     #    file.write(arr_str(bbox) + "\n")
 
 
-    #self_label("./tdata/test_Trim_Trim.mp4")
+    self_label("./tdata/test_Trim_Trim.mp4", 0)
+    #create_folders("./tdata/test_Trim_Trim.mp4")
+    #save_frames("./tdata/test_Trim_Trim.mp4")
 
 

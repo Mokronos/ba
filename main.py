@@ -30,12 +30,16 @@ restore_path = args.restore_path
     
     
     
-#bbox, conf, cla = yolodet(anchor_path, image_path, new_size, letterbox, class_name_path, restore_path)
+bbox, conf, cla = yolodet(anchor_path, image_path, new_size, letterbox, class_name_path, restore_path)
 #print(yolodet(anchor_path, image_path, new_size, letterbox, class_name_path, restore_path))
 
-#print(bbox)
-#print(conf)
-#print(cla)
+print(bbox)
+print(conf)
+print(cla)
 print(get_total_frames("./tdata/test.mp4"))
+print(bbox.shape)
+print(conf.shape)
+create_txt("34 " + arr_str(cla) + arr_str(conf) + arr_str(bbox), "./", "hallo")
+
 
 
