@@ -25,7 +25,7 @@ parser.add_argument("--letterbox_resize", type=lambda x: (str(x).lower() == 'tru
                     help="Whether to use the letterbox resize.")
 parser.add_argument("--class_name_path", type=str, default="./data/coco.names",
                     help="The path of the class names.")
-parser.add_argument("--restore_path", type=str, default="./data/darknet_weights/yolov3",
+parser.add_argument("--restore_path", type=str, default="./data/best_model",
                     help="The path of the weights to restore.")
 args = parser.parse_args()
 
@@ -33,7 +33,8 @@ args.anchors = parse_anchors(args.anchor_path)
 args.classes = read_class_names(args.class_name_path)
 args.num_class = len(args.classes)
 
-color_table = get_color_table(args.num_class)
+#color_table = get_color_table(args.num_class)
+color_table = (0,255,0)
 
 img_ori = cv2.imread(args.input_image)
 if args.letterbox_resize:

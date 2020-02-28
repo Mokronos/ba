@@ -75,8 +75,8 @@ def yolodet(anchor_path, image_path, new_size, letterbox, class_name_path, resto
 #        cv2.imshow('Detection result', img_ori)
 #        cv2.imwrite('detection_result.jpg', img_ori)
 #        cv2.waitKey(0)
-#
-        return boxes_, scores_, labels_
+    tf.reset_default_graph()
+    return boxes_, scores_, labels_
 
 if __name__ == "__main__":
 
@@ -91,7 +91,7 @@ if __name__ == "__main__":
                         help="Whether to use the letterbox resize.")
     parser.add_argument("--class_name_path", type=str, default="./data/coco.names",
                         help="The path of the class names.")
-    parser.add_argument("--restore_path", type=str, default="./data/darknet_weights/yolov3",
+    parser.add_argument("--restore_path", type=str, default="./data/best_model",
                         help="The path of the weights to restore.")
     args = parser.parse_args()
     
