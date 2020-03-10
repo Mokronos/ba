@@ -196,9 +196,9 @@ def read_bbox(txt_path):
                 bbox[i][0][k] = g[1]
                 bbox[i][j+1][k] = g[4 + (j * 6) + k]
     
-    #print(cla)
-    #print(conf)
-    #print(bbox)
+#   print(cla)
+#   print(conf)
+#   print(bbox)
     return cla, conf, bbox
 
 def trans_err_50(data):
@@ -226,6 +226,7 @@ def compare_bbox(vpath):
 
     cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
     cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
+
     err_bbox_xmin = []
     err_bbox_ymin = []
     err_bbox_xmax = []
@@ -337,7 +338,7 @@ def read_arr(txt_path):
 
 def plot_all():
     l = os.listdir("./data")
-    l.remove("stats")
+    #l.remove("stats")
     xmin = np.array([])
     ymin = np.array([])
     xmax = np.array([])
@@ -356,14 +357,81 @@ def plot_all():
     plot_hist(xmin, ymin, xmax, ymax,conf)
     #x.append(read_arr(""))
 
-
+    
 
 # def det_yolo(vpath): maybe in here??
     
-
-
-
+def plot_over_time(vpath):
     
+    vn = extract_name(vpath)
+    cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
+    cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
+
+    fmax = cla1.shape[0]
+    ex = 0
+    start = 0
+    err_bbox = np.zeros((fmax,5))
+     
+    print(err_bbox.shape)
+    for i in range(fmax):
+        if cla1[i,0] != 0 and cla2[i,0] != 0:
+            err_bbox[i,0:4] = bbox1[i,1,:] -bbox2[i,1,:]
+            if ex == 0:
+               start = i
+            ex = 1
+        if cla1[i,0] != 0 and cla2[i,0] != 0:
+            end = i
+        if cla1[i,0] == 0 or cla2[i,0] == 0:
+            err_bbox[i,0:4] = None
+            bbox2[i,1,:] = bbox1[i,1,:]
+
+    for i in range(fmax):
+        if cla1[i,0] != 0 and cla2[i,0] != 0:
+            break
+    
+    tick_y_max = np.amax(err_bbox)
+    print(err_bbox)
+    tick_y_min = np.amin(err_bbox)
+    print(tick_y_max)
+    x = np.arange(0,end-start,1)
+    x2 = np.arange(0,fmax)
+
+
+
+    #plt.plot(x, bbox1[start:end,1,0]-bbox2[start:end,1,0])
+    #plt.title("links")
+    #plt.figure()
+    #plt.plot(x, bbox1[start:end,1,1]-bbox2[start:end,1,1])
+    #plt.title("oben")
+    #plt.figure()
+    #plt.plot(x, bbox1[start:end,1,2]-bbox2[start:end,1,2])
+    #plt.title("rechts")
+    #plt.figure()
+    #plt.plot(x, bbox1[start:end,1,3]-bbox2[start:end,1,3])
+    #plt.title("unten")
+
+    #plt.show()
+
+
+    #plt.figure()
+    err_bbox = err_bbox.astype(np.double)
+    err_mask = np.isfinite(err_bbox)
+    plt.plot(x2[err_mask[:,0]],err_bbox[err_mask[:,0],0], marker= "o" )
+    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.title("links")
+    plt.figure()
+    plt.plot(x2[err_mask[:,1]],err_bbox[err_mask[:,1],1], marker= "o" )
+    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.title("oben")
+    plt.figure()
+    plt.plot(x2[err_mask[:,2]],err_bbox[err_mask[:,2],2], marker= "o" )
+    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.title("rechts")
+    plt.figure()
+    plt.plot(x2[err_mask[:,3]],err_bbox[err_mask[:,3],3], marker= "o" )
+    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.title("unten")
+    plt.show()
     
 
 if __name__ == "__main__":
@@ -377,9 +445,9 @@ if __name__ == "__main__":
     #    file.write(arr_str(bbox) + "\n")
     #compare_bbox(r"C:\Users\Sebastian\Videos\1_58.mp4")
     #print(read_arr("./data/bahn_1s/comparison_error/xmin.txt"))
-    #read_bbox("./data/bahn_1s/detbbox/bbox.txt")
+    plot_over_time("./clips/1_58.mp4")
     #self_label(r"C:\Users\Sebastian\Videos\5_34.mp4", 0)
-    plot_all()
+    #plot_all()
     #create_folders("./tdata/test_Trim_Trim.mp4")
     #save_frames("./tdata/test_Trim_Trim.mp4")
 
