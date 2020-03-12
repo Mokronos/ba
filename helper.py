@@ -1,10 +1,14 @@
 import cv2
+import pandas as pd
 import scipy.stats as stats
+from scipy.stats import *
+from scipy.interpolate import *
 import math
 from PIL import Image
 from datetime import datetime
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy import *
 import argparse
 import sys
 import os
@@ -371,28 +375,22 @@ def plot_over_time(vpath):
     ex = 0
     start = 0
     err_bbox = np.zeros((fmax,5))
-     
-    print(err_bbox.shape)
     for i in range(fmax):
         if cla1[i,0] != 0 and cla2[i,0] != 0:
             err_bbox[i,0:4] = bbox1[i,1,:] -bbox2[i,1,:]
+            err_bbox[i,4] = conf1[i,1] - conf2[i,1]
             if ex == 0:
                start = i
             ex = 1
         if cla1[i,0] != 0 and cla2[i,0] != 0:
             end = i
         if cla1[i,0] == 0 or cla2[i,0] == 0:
-            err_bbox[i,0:4] = None
+            err_bbox[i,0:5] = None
             bbox2[i,1,:] = bbox1[i,1,:]
 
-    for i in range(fmax):
-        if cla1[i,0] != 0 and cla2[i,0] != 0:
-            break
-    
-    tick_y_max = np.amax(err_bbox)
-    print(err_bbox)
-    tick_y_min = np.amin(err_bbox)
-    print(tick_y_max)
+
+    tick_y_max = np.nanmax(err_bbox)
+    tick_y_min = np.nanmin(err_bbox)
     x = np.arange(0,end-start,1)
     x2 = np.arange(0,fmax)
 
@@ -417,22 +415,84 @@ def plot_over_time(vpath):
     err_bbox = err_bbox.astype(np.double)
     err_mask = np.isfinite(err_bbox)
     plt.plot(x2[err_mask[:,0]],err_bbox[err_mask[:,0],0], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
     plt.title("links")
+    plt.grid()
     plt.figure()
     plt.plot(x2[err_mask[:,1]],err_bbox[err_mask[:,1],1], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
     plt.title("oben")
+    plt.grid()
     plt.figure()
     plt.plot(x2[err_mask[:,2]],err_bbox[err_mask[:,2],2], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
     plt.title("rechts")
+    plt.grid()
     plt.figure()
     plt.plot(x2[err_mask[:,3]],err_bbox[err_mask[:,3],3], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,5))
+    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
     plt.title("unten")
+    plt.grid()
+    plt.figure()
+    plt.plot(x2[err_mask[:,4]],err_bbox[err_mask[:,4],4], marker= "o" )
+    plt.title("conf_error")
+    plt.grid()
     plt.show()
     
+
+def corr(vpath):
+    vn = extract_name(vpath)
+    cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
+    cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
+
+    fmax = cla1.shape[0]
+    ex = 0
+    start = 0
+    err_bbox = np.zeros((fmax,5))
+    for i in range(fmax):
+        if cla1[i,0] != 0 and cla2[i,0] != 0:
+            err_bbox[i,0:4] = bbox1[i,1,:] -bbox2[i,1,:]
+            err_bbox[i,4] = conf1[i,1] - conf2[i,1]
+            if ex == 0:
+               start = i
+            ex = 1
+        if cla1[i,0] != 0 and cla2[i,0] != 0:
+            end = i
+        if cla1[i,0] == 0 or cla2[i,0] == 0:
+            err_bbox[i,0:5] = None
+            bbox2[i,1,:] = bbox1[i,1,:]
+    
+    err_bbox_nan = err_bbox[err_bbox!=np.array(None)]
+    count = []
+    for i in range(len(err_bbox)):
+        if math.isnan(err_bbox[i,0]):
+            count.append(i)
+    z = np.delete(err_bbox,count,axis = 0)
+    z1 = z[:,0]
+    z2 = z[:,1]
+    x = np.array([1,2,3,4])
+    x1 = np.array([1,np.nan,3,4])
+    y = np.array([2,3,4,5])
+    y1 = np.array([2,np.nan,4,5])
+    r = np.array([500,222,1,33])
+    
+    for i in range(5):
+        
+        print("mean{}: {}".format(i+1,round(mean(z[:,i]),2)))
+        print("std{}: {}".format(i+1,round(std(z[:,i]),2)))
+
+    for i in range(5):
+        print("-----------------------------------------")
+        for j in range(5):
+            print("cov{}{}: {}".format(i+1,j+1,np.round(cov(z[:,i],z[:,j]),2)))
+            print("pearson{}{}: {}".format(i+1,j+1,round(pearsonr(z[:,i],z[:,j])[0],2)))
+            print("spearman{}{}: {}".format(i+1,j+1,round(spearmanr(z[:,i],z[:,j])[0],2)))
+            print("--------")
+
+    
+    
+
+
 
 if __name__ == "__main__":
     
@@ -445,7 +505,8 @@ if __name__ == "__main__":
     #    file.write(arr_str(bbox) + "\n")
     #compare_bbox(r"C:\Users\Sebastian\Videos\1_58.mp4")
     #print(read_arr("./data/bahn_1s/comparison_error/xmin.txt"))
-    plot_over_time("./clips/1_58.mp4")
+    #plot_over_time("./clips/1_58.mp4")
+    corr("./clips/4_05.mp4")
     #self_label(r"C:\Users\Sebastian\Videos\5_34.mp4", 0)
     #plot_all()
     #create_folders("./tdata/test_Trim_Trim.mp4")
