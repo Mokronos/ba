@@ -1,515 +1,628 @@
-import cv2
-import pandas as pd
-import scipy.stats as stats
-from scipy.stats import *
-from scipy.interpolate import *
-import math
-from PIL import Image
-from datetime import datetime
-import matplotlib.pyplot as plt
 import numpy as np
-from numpy import *
-import argparse
+import math
 import sys
 import os
-from os import path
+import matplotlib.pyplot as plt
+import matplotlib.mlab as mlab
+import cv2
+
 np.set_printoptions(threshold=sys.maxsize, suppress=True)
-#ap = argparse.ArgumentParser()
-#ap.add_argument("--video", type=str, help = "input vid")
-#args = vars(ap.parse_args())
 
-def cvi(vpath):
-    v = cv2.VideoCapture(vpath)
-    mem = []
-    f_total = int(v.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f_total)
-    for i in range(0,f_total):
-        ok , frame = v.read()
-        mem.append(frame)
 
-    return np.array(mem)
+#for masked arrays
+import numpy.ma as ma
 
-def video_array(vpath):
-    vid = cv2.VideoCapture(vpath)
-    fc = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
-    f = 0
-    video = []
+
+#################################################
+#helper functions:
+#################################################
+
+
+
+#make dir if it doesnt exist
+def makedirsx(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+#read info of time segments and custom clipnames
+def readtimes(filename):
+
+    with open(filename + ".txt", "r") as text:
+
+        listtext = list(text)
+        mainvidpath = listtext[0]
+        mainvidpath = "".join(list(mainvidpath[:-1]))
+        listtext.pop(0)
+        startend = []
+        for idx,line in enumerate(listtext):
+            start = line.split()[0]
+            end = line.split()[1]
+            name = line.split()[2]
+            start = start.split(":")
+            end = end.split(":")
+            start = [int(x) for x in start]
+            end = [int(x) for x in end]
+            start = start[0]*60 + start[1]
+            end = end[0]*60 + end[1]
+            startend.append([start,end,name])
+
+    return mainvidpath, startend
+
+
+#creates folders for 1 clip
+def clipfolder(mainvidname, clipname):
+
+    folders = ["data", "detections", "groundtruth"]
+    b = "/"
+    d = "./data/"
+    if not os.path.exists(d + mainvidname):
+        os.makedirs(d + mainvidname)
     
-    while f<fc:
-        _,frame = vid.read()
-        #frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video.append(frame)
-        f += 1
+    if not os.path.exists(d + mainvidname + b + clipname):
+        for i in range(len(folders)):
+
+            os.makedirs(d + mainvidname + b + clipname + b + folders[i])
+
+
+#returns index of first unmasked value of in array (return -99 if no unmasked entry found)
+def getstartindex(array):
+    for i in range(np.shape(array)[0]):
+        if array.mask[i,0] == False:
+            return i
+    return -99
+
+#writes masked array to .txt with masked values deleted
+def writemaarray(maskedarray, filepath, header):
     
-    return video
+    #open text file
+    with open(filepath + ".txt", "w")  as textfile:
 
-# bug: first frame gets saved twice + multiple frames more often. issue with framerate, no bug.
-# need to cut videos same framerate as original. (test.mp4 -- 25fps)
-def save_frames(vpath):
+        #add header to first line
+        textfile.write(header + "\n")
+        
+        #loop over rows and framenumber + values TODO make values int (except the confidence)
+        for i in range(np.shape(maskedarray)[0]):
+            textfile.write(str(i))
+            line = maskedarray[i, maskedarray[i,:].mask == False]
+            for value in line:
+                textfile.write(" " + str(round(value,2)))
+            textfile.write("\n")
+
+#reads masked array from text file(creates rectangular array with "shorter" rows masked)
+def readmaarray(filename):
+    with open(filename + ".txt", "r") as text:
+
+        #make iterator list to use it more than once
+        listtext = list(text)
+
+        #remove header in first line
+        listtext.pop(0)
+
+        #get maxrow and maxcol(pop of first index of every line bc it is the framenumber which is not needed in array)
+        maxrow = 0
+        colcounter = []
+        for idx,line in enumerate(listtext):
+            splitline = [float(x) for x in line.split()]
+            splitline.pop(0)
+            colcounter.append(len(splitline))
+            maxrow = idx + 1
+
+        maxcol = max(colcounter)
+
+        #create fully masked array with (maxrow,maxcol) shape
+        maskedarray = ma.array(np.zeros((maxrow, maxcol)), mask = True, dtype = np.float64)
+
+        #write values from text file into array(masked values get overwritten) --> excess space of shorter rows stays masked + pop off frame number again
+        for idxrow,line in enumerate(listtext):
+            splitline = [float(x) for x in line.split()]
+            splitline.pop(0)
+            for idxcol, value in enumerate(splitline):
+                maskedarray[idxrow, idxcol] = value
+        
+        #return masked array        
+        return maskedarray
+
+#cuts main video(mainvidfile) from start(second) to end(second)(read those out of a text file)
+def cutmainvid(mainvidname, start, end, clipname, sourcepath):
+
+
+    #define datapath(where frames and clip goes)
+    datapath = "./data/" + mainvidname + "/" + clipname + "/data"
+    clippath =  datapath + "/" + clipname + ".avi"
+
+    #load video
+    video = cv2.VideoCapture(sourcepath)
+    ok, frame = video.read()
     
-    vid = extract_name(vpath)
-    video = video_array(vpath)
-    for i in range(len(video)):
-#        Image.fromarray(video[i]).save("./data/" + vid + "/data/" + vid + str(i) + ".jpg")
-        cv2.imwrite("./data/" + vid + "/data/" + vid + str(i) + ".png", video[i])
-        #Image.fromarray(video[i]).save("./data/test/data/test.jpg")
+    #get fps
+    fps = video.get(cv2.CAP_PROP_FPS)
+
+    #get start and finish frame from fps and start/end
+    #multiply fps with seconds = startingframe(is float bc fps is 29.97) --> make int (rounding down)
+    sframe = int(start * fps)
+    eframe = int(end * fps)
+
+    #if start 0 and end 0 given --> take whole main video as clip(mainly for synthetic data)
+    if start == 0 and end == 0:
+        sframe = 0
+        eframe = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+        end = eframe /fps
+
+    #set starting frame for VideoCapture
+    video.set(cv2.CAP_PROP_POS_FRAMES, sframe)
+
+    #set up VideoWriter
+    writefps = fps
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    dimensions = (1920, 1080)
+    cutvid = cv2.VideoWriter(clippath, fourcc, writefps, dimensions) 
+
+    #create text file with clip properties
+    videoinfotext(datapath,sourcepath,fps,sframe, eframe, start, end, clippath, writefps)  
+
+    #loop from sframe to eframe, save every single frame as clipname + frame_number and whole clip as .avi
+    for i in range(sframe, eframe):
 
 
-def extract_name(vpath):
-    if "/" in vpath:
-        vid = vpath.split("/")
-    elif "\\" in vpath:
-        vid = vpath.split("\\")
+        #read current frame
+        ok, frame = video.read()
 
-    vid = vid[len(vid)-1]
-    vid = vid.split(".")[0]
-    return vid
+        #write current frame to video
+        cutvid.write(frame)
 
+        #write current frame to file as png
+        cv2.imwrite(datapath + "/" + clipname + "#" + str(i-sframe) + ".png", frame)
 
-def create_folders(vpath):
+    #release Videocapture
+    video.release()
+    cutvid.release()
+    cv2.destroyAllWindows()
+
+#write some info about where the clip was cut from to ensure reproducibility
+def videoinfotext(targetpath, sourcevideo, sourcefps, startframe, endframe, startsecond, endsecond, clippath, clipfps):
+
+    #write all the given stuff nicely in a text file !!TODO: maybe find a nicer represantation to make it easier to read for another function
+    with open(targetpath + "/sourceinfo.txt", "w") as textfile:
+
+        textfile.write("sourcevideo:" + "\n")
+        textfile.write("path: "+ str(sourcevideo) + "\n")
+        textfile.write("fps: " + str(round(sourcefps, 2))+ "\n")
+        textfile.write("cut from frame: " + str(startframe) + " to frame: " + str(endframe)+ " (endframe not included)" + "\n")
+        textfile.write("cut from second: " + str(startsecond) + " to second: " + str(endsecond)+ " (approximate measure, better to use framenumber)" + "\n")
+
+        textfile.write("\n")
+        textfile.write("clip:" + "\n")
+        textfile.write("path:" + str(clippath) + "\n")
+        textfile.write("fps: " + str(round(clipfps, 2))+ "\n")
+        textfile.write("total frames:"  + str(endframe-startframe) + "\n")
+
+#returns total frames of clip given a clipname
+#TODO change method of getting frames or giving clipname parameter, its ugly like this (need to carry clipname through methods that dont even need it)
+def gettotalframes(clippath):
+
+    #get clipname
+    clipname = extract(clippath)
+
+    #extract total framenumber
+    vid = cv2.VideoCapture(clippath + "/data/" +clipname + ".avi")
+    number = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    return number
+
+#get yolo detections of clip and write to file 
+def clipyolodet(clippath):
+
+    clipname = extract(clippath)
+
+    #import only in this method(import takes long) --> so only import when needed
+    sys.path.insert(1,"./yolo/")
+    from yolosingleimage import yolodet
+
+    #get max number of frames
+    totframes = gettotalframes(clippath)
     
-    vid = extract_name(vpath)
-    now = datetime.now()
-    now = now.strftime("%Y-%m-%d_%H-%M-%S")
-    #now = now.strftime("%Y")
-    if not path.exists("./data/" + vid):
-        os.makedirs("./data/" + vid)
-        os.makedirs("./data/" + vid + "/data")
-        os.makedirs("./data/" + vid + "/detbbox")
-        os.makedirs("./data/" + vid + "/groundtruth")
-        os.makedirs("./data/" + vid + "/tracker_prediction")
-        os.makedirs("./data/" + vid + "/comparison_error")
-        os.makedirs("./data/" + vid + "/tracker_prediction/" + now)
-    else:
-        os.makedirs("./data/" + vid + "/tracker_prediction/" + now)
-    return now
-
-def video_path(video_name):
-    return ("./data/" + str(video_name))
-
-def create_txt(text, path, name):
-    with open(path + "/" + name + ".txt", "a") as file:
-        file.write(text + "\n")
-
-#ugly
-def arr_str(arr):
-    text = ""
-    arr = np.array(arr)
-    if len(arr.shape)==1:
-        for i in range(len(arr)):
-            text = text + str(arr[i]) + " "
-    else:
-        for i in range(len(arr)):
-            for j in range(len(arr[0])):
-                text = text + str(arr[i][j]) + " "
-    return text
 
 
-def frame_path(vpath, frame_number):
-    return video_path(extract_name(vpath)) + "/data/" + extract_name(vpath) + str(frame_number) + ".png"
+    #create masked array with shape(totframes, 6*100) 100 for 100 max detections per frame --> cut off right side of array later when max detection amount of clip is known
+    bbox = ma.array(np.zeros((totframes, 600)), mask = True, dtype = np.float64)
 
-def frame_array(vpath, frame_number):
-    return cv2.imread(frame_path(vpath,frame_number))
+    #loop over frames of clip
+    for i in range(totframes):
+        print("yolo running on frame:" +str(i))
+        det = yolodet(clippath + "/data/"+ clipname + "#" + str(i) + ".png")
+        if det is not []:
 
-def get_total_frames(vpath):
-    return int(cv2.VideoCapture(vpath).get(cv2.CAP_PROP_FRAME_COUNT))
+            bbox[i,:len(det)] = det
 
 
-# make single methods for yolo detection and for slef labeling(ground truth), otherwise folder seletion isdifficult
+    bbox = bbox[:, ~np.all(bbox.mask, axis=0)]
 
-def self_label(vpath, clas):
-    savepath = video_path(extract_name(vpath))
-    old_bbox=[0,0,0,0]
+
+
+    return bbox
+
+#extract clipname from clippath
+def extract(clippath):
     
-    for i in range(get_total_frames(vpath)):
-        cla = [clas]
-        conf = [1]
-        frame = frame_array(savepath, i)
-        print(old_bbox)
-        frame = cv2.rectangle(frame, (old_bbox[0],old_bbox[1]), (old_bbox[2],old_bbox[3]), (0,255,0), 1)
+    return clippath.split("/")[-1]
+
+#prompts user to label a clip (draw rectangle on given label)
+def selflabel(clippath, label):
+
+    #define how many detections there are per frame TODO make dependent on current frame (hotkey for next frame and option to select second box for current frame + maybe define class when labeling)
+    detnmb = 1
+
+    clipname = extract(clippath)
+
+    #get max number of frames
+    totframes = gettotalframes(clippath)
+
+    #create masked array with shape(totalframes, (1+1+4))
+    groundtruth = ma.array(np.zeros((totframes, detnmb * 6)), mask = True, dtype = np.float64)
+
+    #loop over frames and select bboxes with cv2.selectROI() --> save them as array
+    for i in range(totframes):
+
+        #read current frame
+        frame = cv2.imread(clippath + "/data/" + clipname + "#" + str(i) + ".png")
+
+        #draw info on frame(framenumber)
         frame = cv2.putText(frame, str(i), (50,50), cv2.FONT_HERSHEY_SIMPLEX, 1,(0,255,0),3)
+
+        #draw bbox of last frame as reference and frame number
+        if i > 0:
+            if groundtruth[i-1,0] is not ma.masked:
+
+                frame = cv2.rectangle(frame, (int(groundtruth[i-1,2]),int(groundtruth[i-1,3])), (int(groundtruth[i-1,4]),int(groundtruth[i-1,5])), (0,255,0), 1)
+
+        #select bbox
         bbox = cv2.selectROI(frame)
+
+        #convert bbox coord from (xmin,ymin,width,height) to (xmin,ymin,xmax,ymax)
         bbox = list(bbox)
+    
         bbox[2] = bbox[0] + bbox[2]
         bbox[3] = bbox[1] + bbox[3]
-        old_bbox = bbox
-        bbox = [bbox]
-        if bbox == [[0,0,0,0]]:
-            bbox = [[]]
-            cla = []
-            conf = []
-        print(bbox)
-        print(cla)
-        print(conf)
-        write_bbox(cla, conf, bbox, i, savepath + "/groundtruth")
+
+        #fill array with values(save bbox values) (label,confidence{100% when labeling},xmin,ymin,xmax,ymax)
+        groundtruth[i,:] = [label,1] + bbox
+
+        #remask non-detections(selectROI() returns (0,0,0,0) when not selecting any bbox --> need to remask 0s)
+        if bbox == [0,0,0,0]:
+            groundtruth[i,:] = ma.masked
+    
+    return groundtruth
+
+#removes unwanted detections(multiples of 1 class on 1 object in 1 frame, 2nd class, detectins on 2nd object other than main object{self labeled})
+def cleanup(bbox, mainlabel, groundtruth):
+
+    #mask unwanted class e.g. if main label is 0 --> 1 is unwanted --> remove 1
+    for i in range(np.shape(bbox)[0]):
         
+        #loop over blocks of 6
+        for j in range(np.shape(bbox)[1]//6):
 
+            #check if entry is the wrong class and is not masked(valid)
+            if bbox.mask[i,j*6] == False:
+                if int(bbox[i, j*6]) != mainlabel:
 
-#selectroi returns [xmin, ymin, xmax, ymax] from top left corner
-#detmethod returns [label, confidence, x_min, y_min, x_max, y_max]
-def det_bbox(det_method, vpath):
+                    #mask wrong class
+                    bbox[i, j*6:j*6+6] = ma.masked
     
-    #for i in range(get_total_frames(vpath)):
-    #    frame = frame_array(vpath, i)
-    #    #det = det_method(frame)
-    #    det = [i,i,4,1,2,3]
-    #    det = det.flatten()
-    #    det = np.array(det)
-    #    #create_txt(arr_str(det), vpath, det_method.__name__)
-    #    create_txt(arr_str(det), vpath, "geg")
-    for i in range(11):
-        #frame = frame_array(vpath, i)
-        #det = det_method(frame)
-        det = [i,i,4,1,2,3]
-        det = np.array(det)
-        det = det.flatten()
-        #create_txt(arr_str(det), vpath, det_method.__name__)
-        create_txt(arr_str(det), video_path(extract_name(vpath)) + "/detbbox", "geg")
+    #squish array back together --> entries are all to left
+    bbox = squisharray(bbox)
+    #print("unwanted class removed")
+    #print(repr(bbox))
 
-def write_bbox(cla, conf, bbox, frame_nbr, txtpath):
-    text = "{} {}".format(frame_nbr, len(cla))
-    conf_round = []
-    for i in range(len(cla)):
-        conf_round.append(round(conf[i],4))
+    #remove multiple detections of main class(with self labeling as position reference)
+    #first check if 2 or more bboxes have overlapping area(IoU does the job) --> delete the ones with least confidence
+    #then keep the one with least distance to ground truth
+    for k in range(np.shape(bbox)[0]):
+        #work one row at a time
+        rowdata = bbox[k,bbox.mask[k,:] == False]
+        #print(str(k) +"th row:")
+        #print(repr(rowdata))
+        #condition for breaking the loop
+        while(1):
+            bc = 0
+            #work with one row at a time --> delete overlappings first 
+            rowdata = rowdata[rowdata.mask[:] == False]
+            entries = np.shape(rowdata)[0]//6
+            #loop over entries
+            for i in range(entries):
+                #loop over other entries 
+                for j in range(i+1,entries):
+                    #check if entries are overlapping
+                    if iou(rowdata[i*6+2:i*6+6], rowdata[j*6+2:j*6+6]) > 0:
+                        #if they are overlapping mask the one with the lesser confidence
+                        if rowdata[i*6+1] < rowdata[j*6+1]:
+                            rowdata[i*6:i*6+6] = ma.masked
+                        else:
+                            rowdata[j*6:j*6+6] = ma.masked
+                        #break out of loop bc array changed --> loops would try to pull already empty
+                        bc = 1
+                        break
+                if bc == 1:
+                    break
+            break
+
+        #print("overlapping removed:")
+        #print(repr(rowdata))
+        rowdata = rowdata[rowdata.mask[:] == False]
+        entries = np.shape(rowdata)[0]//6
+        #print(repr(rowdata))
+
+        #all overlaying bboxes removed --> now pick the bbox closest to groundtruth and remove others (others are probably other objects)
+        #loop over left over bbox of current row
+        gtcenter = center(groundtruth[k,2:6])
+        gtwh = widthheight(groundtruth[k, 2:6])
+        mem = []
+        for i in range(entries):
+            mem.append(norm(gtcenter, center(rowdata[i*6+2:i*6+6])))
+        try:
+            maxpos = mem.index(min(mem))
+            #make rowdata the bbox thats closest to gt
+            rowdata = rowdata[maxpos*6:maxpos*6+6]
+        except (ValueError, TypeError):
+            pass
         
-        text = text + " {} ".format(cla[i]) +str(conf_round[i])+" {} {} {} {}".format(int(round(bbox[i][0])),int(round(bbox[i][1])),int(round(bbox[i][2])),int(round(bbox[i][3])))
-    create_txt(text, txtpath, "bbox") 
+        #mask remaining bbox if it is further away from gt than two times the width/height average of the gt --> it most likely is another object at that point --> so pretty much no detection on main object 
+        try:
+            if norm(gtcenter, center(rowdata[2:6])) > (gtwh[0] + gtwh[1]):
+                rowdata[:] = ma.masked
+        except (IndexError):
+            pass
 
+        rowdata = rowdata[rowdata.mask[:] == False]
+        #put final rowdata back into main bbox array
+        #mask whole row
+        bbox[k, :] = ma.masked
+        for i in range(np.shape(rowdata)[0]):
+            bbox[k,i] = rowdata[i]
 
-def read_bbox(txt_path):
+    bbox = squisharray(bbox)
+    return bbox
+
+#calculate euclidean distance
+def norm(center1, center2):
     
-    f = open(txt_path)
-    f = f.read()
-    f = f.splitlines()
-    max_cla = []
-    for i in range(len(f)):
-        max_cla.append(f[i].split()[1])
-    cla = np.zeros((len(f),int(max(max_cla))+1))
-    conf = np.zeros((len(f),int(max(max_cla))+1))
-    bbox = np.zeros((len(f),int(max(max_cla))+1,4))
-    for i in range(len(f)):
-        g = f[i].split()
-        for j in range(len(g)):
-            g[j] = float(g[j])
-        cla[i][0] = g[1]
-        conf[i][0] = g[1]
-        for j in range(int(g[1])):
-            cla[i][j+1] = g[2 + 6*j]
-            conf[i][j+1] = g[3 + 6*j]
-            for k in range(4):
-                bbox[i][0][k] = g[1]
-                bbox[i][j+1][k] = g[4 + (j * 6) + k]
+    difference = np.subtract(center1,center2)
+    distance = (difference[0]**2 + difference[1]**2)**0.5
+
+    return distance
+
+#calculate width and height from bbox
+def widthheight(bbox):
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    return [width, height]
+
+#calculate coordinates of center from (xmin,ymin,xmax,ymax)
+def center(bbox):
+
+    centerx = (bbox[0] + bbox[2]) / 2
+    centery = (bbox[1] + bbox[3]) / 2
+
+    return [centerx, centery]
+
+#calculates intersection over union for 2 given bboxes in format(xmin,ymin,xmax,ymax)
+def iou(bbox1, bbox2):
+    bbox1 = [int(x) for x in bbox1]
+    bbox2 = [int(x) for x in bbox2]
+    w_inter = min(bbox1[2],bbox2[2])  - max(bbox1[0],bbox2[0])
+    h_inter = min(bbox1[3],bbox2[3])  - max(bbox1[1],bbox2[1])
+    if w_inter <= 0 or h_inter <= 0:
+        return 0
+
+    I = w_inter * h_inter
+    U = (bbox1[2] - bbox1[0]) * (bbox1[3]- bbox1[1]) + (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1]) - I
+
     
-#   print(cla)
-#   print(conf)
-#   print(bbox)
-    return cla, conf, bbox
+    return I/U
 
-def trans_err_50(data):
-    x = 5
-    y = 10
-    f = np.zeros(2*y)
-    t = 0
-    for i in range(-y,y-1):
-        for j in range(len(data)):
-            if i*x<=data[j]<(i+1)*x:
-                f[t] += 1
-        t += 1
+#moves entrys of masked array to the left if there is space(masked entries) and deletes space on the right afterwards
+#make sure given array does actually have a mask --> error otherwise
+def squisharray(marr):
+    
+    #check max needed columns of array
+    c = []
+    for i in range(np.shape(marr)[0]):
+        c.append(marr[i,:].count())
 
-    #x_axis = range(-y,y)
-    #plt.plot(x_axis, f, "ro")
-    #plt.bar(x_axis, f)
-    #plt.show()
+    maxcol = max(c)
 
-    return f
+    #create new array with maxcol
+    newmarr = ma.array(np.zeros((np.shape(marr)[0], maxcol)), mask = True, dtype = np.float64)
+
+    #loop over rows to fill new array
+    for i in range(np.shape(marr)[0]):
+
+        rowdata = marr[i,marr.mask[i,:] == False]
+        newmarr[i,:np.shape(rowdata)[0]] = rowdata 
+
+    return newmarr
+
+#compare gt with cleaned detection and return error (input coordinates --> output masked array with errors instead of coordinates) 
+def error(bbox, gt):
+    for i in range(np.shape(bbox)[0]):
+        #if bbox at frame i is masked --> no detection there to calculate error from --> mask error of that frame
+        if bbox[i,0] is not ma.masked:
+            bbox[i,:] = np.subtract(bbox[i,:],gt[i,:])
+        else:
+            bbox[i,:] = ma.masked
+
+    err = bbox
+    return err
+        
+#plot histogram for errors(nx5 list with error for 4 dimensions {n = frames})
+#representation is parameter for kalman filter representation with aspect ratio --> need different y and x axis for graph
+#TODO improve legend
+def hist(error, representation, binsize,title, subtitles, xlabel, ylabel, savepath):
+
+    fig, axs = plt.subplots(2,2)
+    fig.suptitle(title)
+    axs = axs.flatten()
+    membins = []
+    memrange = []
+    
+    #figure out max range needed so that all 4 plots have same range and include all values --> make multiple of binsize so that it looks clean
+    for i in range(np.shape(error)[1]):
+        membins.append(abs(max(error[:,i]) - min(error[:,i])))
+        memrange.append(max(abs(error[:,i])))
+    maxbins = int(max(membins))
+    maxrange = int(max(memrange)//binsize * binsize + binsize)
+    maxbins = maxrange*2//binsize
+    
+    #define things for gauss function
+    t = np.linspace(-maxrange,maxrange,maxrange*2 +1)
+    mean, std = stats(error)
+
+    #plot
+    for i in range(np.shape(error)[1]):
+        axs[i].hist(error[:,i],bins = maxbins,range = (-maxrange,maxrange), normed = True) 
+        axs[i].set(title =  subtitles[i])
+        axs[i].set(xlabel = xlabel[i], ylabel = ylabel[i])
+        #axs[i].set(yticks = np.linspace(0,0.05,6))
+        axs[i].set(xticks = range(-maxrange,maxrange+1,binsize*4))
+        #plt gaussian over hist
+        axs[i].plot(t, mlab.normpdf(t, mean[i], std[i]))
+
+    if representation == "asp":
+        t = np.linspace(-1,1,100)
+        axs[3].clear()
+        axs[3].hist(error[:,3],bins = maxbins,range = (-1,1), normed = True) 
+        axs[3].set(title =  subtitles[3])
+        axs[3].set(xlabel = "aspect ratio", ylabel = ylabel[3])
+        #axs[3].set(xticks = np.linspace(-1,1,5))
+        #axs[3].set(xlim = [-1,1])
+        axs[3].plot(t, mlab.normpdf(t, mean[3], std[3]))
 
 
-#works only for 1 class
-def compare_bbox(vpath):
-    vn = extract_name(vpath)
-
-    cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
-    cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
-
-    err_bbox_xmin = []
-    err_bbox_ymin = []
-    err_bbox_xmax = []
-    err_bbox_ymax = []
-    err_conf = []
-    for i in range(cla1.shape[0]):
-        if cla1[i][0] != 0 and cla2[i][0] != 0:
-            err_bbox_xmin.append(bbox1[i][1][0] - bbox2[i][1][0])
-            err_bbox_ymin.append(bbox1[i][1][1] - bbox2[i][1][1])
-            err_bbox_xmax.append(bbox1[i][1][2] - bbox2[i][1][2])
-            err_bbox_ymax.append(bbox1[i][1][3] - bbox2[i][1][3])
-            err_conf.append(conf1[i][1] - conf2[i][1])
-            #print(i)
-    if not os.path.exists(video_path(vn) + "/comparison_error/xmin.txt"):
-
-        create_txt(arr_str(err_bbox_xmin), video_path(vn) + "/comparison_error", "xmin")
-        create_txt(arr_str(err_bbox_ymin), video_path(vn) + "/comparison_error", "ymin")
-        create_txt(arr_str(err_bbox_xmax), video_path(vn) + "/comparison_error", "xmax")
-        create_txt(arr_str(err_bbox_ymax), video_path(vn) + "/comparison_error", "ymax")
-        create_txt(arr_str(err_conf),video_path(vn) + "/comparison_error", "conf")
+    plt.tight_layout()
+    plt.savefig(savepath + ".pdf")
+    plt.savefig(savepath + ".png")
      
-    #print(err_bbox_xmin)
-    #print(err_bbox_ymin)
-    #print(err_bbox_xmax)
-    #print(err_bbox_ymax)
-
-    plot_hist(err_bbox_xmin,err_bbox_ymin,err_bbox_xmax,err_bbox_ymax,err_conf)
+#takes masked array with errors and total error (default = empty) and appends it --> returns mxn list with errors TODO if conf error is neeeded --> dont delete 2nd column
+def apperror(error, toterror):
 
 
-def mu_sigma(data):
-    mu = np.mean(data)
-    sigma = np.var(data)
-    return mu, sigma**0.5
+    error = error[~error.mask.any(axis=1)]
 
-def gauss_f(x,mu,sigma):
-    y = (1/(sigma*(2*math.pi)**0.5)) * np.exp((-1/2)*((x-mu)/sigma)**2)
-    return y
- 
+    error = error[:,-4:]
 
-def plot_hist(err_bbox_xmin,err_bbox_ymin,err_bbox_xmax,err_bbox_ymax,err_conf):
+    for i in range(np.shape(error)[0]):
 
-    fig, axs = plt.subplots(2, 2)
-    fig.tight_layout(pad=3.0)
-    total = len(err_bbox_xmin)
-    print(total)
-
-    x = np.arange(-60,60,0.01)
-    mu1,sigma1 = mu_sigma(err_bbox_xmin)
-    mu2,sigma2 = mu_sigma(err_bbox_ymin)
-    mu3,sigma3 = mu_sigma(err_bbox_xmax)
-    mu4,sigma4 = mu_sigma(err_bbox_ymax)
+        toterror.append(error[i,:].tolist())
     
-    axs[0,0].hist(err_bbox_xmin,bins = 20, density = True, range = (-60,60), histtype = "barstacked" )
-    axs[0,0].plot(x, gauss_f(x,mu1,sigma1),"r")
-    axs[0,0].set_xticks(np.arange(-60,61,10))
-    #axs[0,0].set_yticks(np.arange(0,1,0.1))
-    #axs[0,0].set_yticklabels(np.round(np.arange(0,21,5)/total,2))
-    axs[0,0].set_title("x_min")
-    axs[0,0].set(xlabel="Fehler in Pixel", ylabel="normierte Fehleranzahl")
-
-    axs[0,1].hist(err_bbox_ymin,bins = 20, density = True, range = (-60,60), histtype = "barstacked" )
-    axs[0,1].plot(x, gauss_f(x,mu2,sigma2),"r")
-    axs[0,1].set_xticks(np.arange(-60,61,10))
-    #axs[0,1].set_yticks(np.arange(0,21,5))
-    #axs[0,1].set_yticklabels(np.round(np.arange(0,21,5)/total,2))
-    axs[0,1].set_title("y_min")
-    axs[0,1].set(xlabel="Fehler in Pixel", ylabel="normierte Fehleranzahl")
-
-    axs[1,0].hist(err_bbox_xmax,bins = 20, density = True, range = (-60,60), histtype = "barstacked" )
-    axs[1,0].plot(x, gauss_f(x,mu3,sigma3),"r")
-    axs[1,0].set_xticks(np.arange(-60,61,10))
-    #axs[1,0].set_yticks(np.arange(0,21,5))
-    #axs[1,0].set_yticklabels(np.round(np.arange(0,21,5)/total,2))
-    axs[1,0].set_title("x_max")
-    axs[1,0].set(xlabel="Fehler in Pixel", ylabel="normierte Fehleranzahl")
-
-    axs[1,1].hist(err_bbox_ymax,bins = 20, density = True, range = (-60,60), histtype = "barstacked" )
-    axs[1,1].plot(x, gauss_f(x,mu4,sigma4),"r")
-    axs[1,1].set_xticks(np.arange(-60,61,10))
-    #axs[1,1].set_yticks(np.arange(0,21,5))
-    #axs[1,1].set_yticklabels(np.round(np.arange(0,21,5)/total,2))
-    axs[1,1].set_title("y_max")
-    axs[1,1].set(xlabel="Fehler in Pixel", ylabel="normierte Fehleranzahl")
+    return toterror
     
-    fig2 = plt.figure()
-    plt.hist(err_conf,bins = 30, range = (0,0.6), histtype = "barstacked" )
-    plt.xticks(np.arange(0,0.6,0.1))
-    plt.yticks(np.arange(0,71,10),np.round(np.arange(0,71,10)/total,2))
-    plt.title("Konfidenzenverteilung")
-    plt.xlabel("Konfidenzfehler")
-    plt.ylabel("normierte Fehleranzahl")
-    #plt.text(-100, 80 , "total datapoints: " + str(len(err_bbox_xmin)), fontsize=12)
-    print(stats.norm.fit(err_bbox_xmin))
-    print(mu1)
-    print(sigma1)
-    #fig3 = plt.figure()
-    #plt.plot(x,gauss_f(x,mu1,sigma1))
-    plt.show()
-
-
-def read_arr(txt_path):
     
-    f = open(txt_path, "r")
-    f = f.read()
-    f = f.split(" ")
-    f = f[0:len(f)-1]
-    f = list(map(float, f))
-    return f
-
-def plot_all():
-    l = os.listdir("./data")
-    #l.remove("stats")
-    xmin = np.array([])
-    ymin = np.array([])
-    xmax = np.array([])
-    ymax = np.array([])
-    conf = np.array([])
-    for i in range(len(l)):
+    
+#plot groundtruth and detections over time(frames) --> input: xmin,ymin,xmax,ymax (masked array)
+#TODO make axis scales better depending on how it works with many frames
+def timeplot(bbox,title, ylim, subtitles, xlabel, ylabel, savepath):
+    fig, axs = plt.subplots(2,2)
+    fig.suptitle(title)
+    axs = axs.flatten()
+    for i in range(np.shape(bbox)[1]):
+        axs[i].scatter(range(np.shape(bbox)[0]), bbox[:,i])
+        axs[i].set(ylim = ylim[i])
+        axs[i].set(title = subtitles[i])
+        axs[i].set(xlabel = xlabel[i], ylabel = ylabel[i])
+    plt.tight_layout()
+    plt.savefig(savepath + ".pdf")
+    plt.savefig(savepath + ".png")
         
-        xmin = np.append(xmin, read_arr("./data/" + l[i] + "/comparison_error/xmin.txt"))
-        ymin = np.append(ymin, read_arr("./data/" + l[i] + "/comparison_error/ymin.txt"))
-        xmax = np.append(xmax, read_arr("./data/" + l[i] + "/comparison_error/xmax.txt"))
-        ymax = np.append(ymax, read_arr("./data/" + l[i] + "/comparison_error/ymax.txt"))
-        conf = np.append(conf, read_arr("./data/" + l[i] + "/comparison_error/conf.txt"))
-        
-    #print(xmin)
+
+#calc std and mean of given array(input = n x 4 array of errors)
+def stats(array):
+    mean = np.mean(array, axis = 0)
+    std = np.std(array, axis = 0)
+    return mean, std
+
+#iou average over clip (only when detection exists)
+def iouclip(bbox, gt):
+    ioumem = []
+    for i in range(bbox.shape[0]):
+        if bbox.mask[i,0] == False and gt.mask[i,0] == False:
+            ioumem.append(iou(bbox[i,:],gt[i,:]))
+    return np.mean(ioumem)
+
+#transform array from corners(xmin,ymin,xmax,ymax) to aspect(centerx,centery,width,aspect ratio) representation
+def corasp(array):
+
+    array = array.copy()
+
+    #transform to center repr. first so its easier
+    array = corcen(array)
     
-    plot_hist(xmin, ymin, xmax, ymax,conf)
-    #x.append(read_arr(""))
+    for i in range(array.shape[0]):
+        if array.mask[i,0] == False:
+            ar = array[i,2]/array[i,3]
+            array[i, 3] = ar
+            
+    return array
 
+#transform array from corners(xmin,ymin,xmax,ymax) to center(centerx,centery,width,height) representation
+def corcen(array):
+
+    array = array.copy()
+
+    for i in range(array.shape[0]):
+        if array.mask[i,0] == False:
+            centerx = (array[i,2] + array[i,0])/2
+            centery = (array[i,3] + array[i,1])/2
+            width = array[i,2] - array[i,0]
+            height = array[i,3] - array[i,1]
+            p = [centerx,centery,width,height]
+            for j in range(len(p)):
+                array[i,j] = p[j]
+             
+    return array
+
+#transform array from center(centerx,centery,width,height)  to corners(xmin,ymin,xmax,ymax) representation
+def cencor(array):
     
+    array = array.copy()
 
-# def det_yolo(vpath): maybe in here??
+    for i in range(array.shape[0]):
+        if array.mask[i,0] == False:
+            xmin = array[i,0] - array[i,2]/2
+            ymin = array[i,1] - array[i,3]/2
+            xmax = array[i,0] + array[i,2]/2
+            ymax = array[i,1] + array[i,3]/2
+            p = [xmin,ymin,xmax,ymax]
+            for j in range(len(p)):
+                array[i,j] = p[j]
+
+    return array
+
+#transform array from aspect(centerx,centery,width,aspect ratio) to corners(xmin,ymin,xmax,ymax) representation
+def aspcor(array):
     
-def plot_over_time(vpath):
-    
-    vn = extract_name(vpath)
-    cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
-    cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
+    array = array.copy()
 
-    fmax = cla1.shape[0]
-    ex = 0
-    start = 0
-    err_bbox = np.zeros((fmax,5))
-    for i in range(fmax):
-        if cla1[i,0] != 0 and cla2[i,0] != 0:
-            err_bbox[i,0:4] = bbox1[i,1,:] -bbox2[i,1,:]
-            err_bbox[i,4] = conf1[i,1] - conf2[i,1]
-            if ex == 0:
-               start = i
-            ex = 1
-        if cla1[i,0] != 0 and cla2[i,0] != 0:
-            end = i
-        if cla1[i,0] == 0 or cla2[i,0] == 0:
-            err_bbox[i,0:5] = None
-            bbox2[i,1,:] = bbox1[i,1,:]
+    for i in range(array.shape[0]):
+        if array.mask[i,0] == False:
+            height = array[i,2]/array[i,3]
+            array[i,3] = height
 
+    return cencor(array)
 
-    tick_y_max = np.nanmax(err_bbox)
-    tick_y_min = np.nanmin(err_bbox)
-    x = np.arange(0,end-start,1)
-    x2 = np.arange(0,fmax)
+def viskal(bbox, gt, kal,clippath, savepath):
 
-
-
-    #plt.plot(x, bbox1[start:end,1,0]-bbox2[start:end,1,0])
-    #plt.title("links")
-    #plt.figure()
-    #plt.plot(x, bbox1[start:end,1,1]-bbox2[start:end,1,1])
-    #plt.title("oben")
-    #plt.figure()
-    #plt.plot(x, bbox1[start:end,1,2]-bbox2[start:end,1,2])
-    #plt.title("rechts")
-    #plt.figure()
-    #plt.plot(x, bbox1[start:end,1,3]-bbox2[start:end,1,3])
-    #plt.title("unten")
-
-    #plt.show()
-
-
-    #plt.figure()
-    err_bbox = err_bbox.astype(np.double)
-    err_mask = np.isfinite(err_bbox)
-    plt.plot(x2[err_mask[:,0]],err_bbox[err_mask[:,0],0], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
-    plt.title("links")
-    plt.grid()
-    plt.figure()
-    plt.plot(x2[err_mask[:,1]],err_bbox[err_mask[:,1],1], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
-    plt.title("oben")
-    plt.grid()
-    plt.figure()
-    plt.plot(x2[err_mask[:,2]],err_bbox[err_mask[:,2],2], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
-    plt.title("rechts")
-    plt.grid()
-    plt.figure()
-    plt.plot(x2[err_mask[:,3]],err_bbox[err_mask[:,3],3], marker= "o" )
-    plt.yticks(np.arange(tick_y_min,tick_y_max,10))
-    plt.title("unten")
-    plt.grid()
-    plt.figure()
-    plt.plot(x2[err_mask[:,4]],err_bbox[err_mask[:,4],4], marker= "o" )
-    plt.title("conf_error")
-    plt.grid()
-    plt.show()
-    
-
-def corr(vpath):
-    vn = extract_name(vpath)
-    cla1, conf1, bbox1 = read_bbox("./data/" + str(vn) + "/groundtruth/bbox.txt")
-    cla2, conf2, bbox2 = read_bbox("./data/" + str(vn) + "/detbbox/bbox.txt")
-
-    fmax = cla1.shape[0]
-    ex = 0
-    start = 0
-    err_bbox = np.zeros((fmax,5))
-    for i in range(fmax):
-        if cla1[i,0] != 0 and cla2[i,0] != 0:
-            err_bbox[i,0:4] = bbox1[i,1,:] -bbox2[i,1,:]
-            err_bbox[i,4] = conf1[i,1] - conf2[i,1]
-            if ex == 0:
-               start = i
-            ex = 1
-        if cla1[i,0] != 0 and cla2[i,0] != 0:
-            end = i
-        if cla1[i,0] == 0 or cla2[i,0] == 0:
-            err_bbox[i,0:5] = None
-            bbox2[i,1,:] = bbox1[i,1,:]
-    
-    err_bbox_nan = err_bbox[err_bbox!=np.array(None)]
-    count = []
-    for i in range(len(err_bbox)):
-        if math.isnan(err_bbox[i,0]):
-            count.append(i)
-    z = np.delete(err_bbox,count,axis = 0)
-    z1 = z[:,0]
-    z2 = z[:,1]
-    x = np.array([1,2,3,4])
-    x1 = np.array([1,np.nan,3,4])
-    y = np.array([2,3,4,5])
-    y1 = np.array([2,np.nan,4,5])
-    r = np.array([500,222,1,33])
-    
-    for i in range(5):
-        
-        print("mean{}: {}".format(i+1,round(mean(z[:,i]),2)))
-        print("std{}: {}".format(i+1,round(std(z[:,i]),2)))
-
-    for i in range(5):
-        print("-----------------------------------------")
-        for j in range(5):
-            print("cov{}{}: {}".format(i+1,j+1,np.round(cov(z[:,i],z[:,j]),2)))
-            print("pearson{}{}: {}".format(i+1,j+1,round(pearsonr(z[:,i],z[:,j])[0],2)))
-            print("spearman{}{}: {}".format(i+1,j+1,round(spearmanr(z[:,i],z[:,j])[0],2)))
-            print("--------")
-
-    
-    
-
-
-
-if __name__ == "__main__":
-    
-    bbox = [224,311,4,21]
-    bbox1 = np.array([1,2,3,4])
-    #det_bbox(bbox,"./data/video")
-    print(get_total_frames("./tdata/test.mp4"))
-
-    #with open("text.txt", "a") as file:
-    #    file.write(arr_str(bbox) + "\n")
-    #compare_bbox(r"C:\Users\Sebastian\Videos\1_58.mp4")
-    #print(read_arr("./data/bahn_1s/comparison_error/xmin.txt"))
-    #plot_over_time("./clips/1_58.mp4")
-    corr("./clips/4_05.mp4")
-    #self_label(r"C:\Users\Sebastian\Videos\5_34.mp4", 0)
-    #plot_all()
-    #create_folders("./tdata/test_Trim_Trim.mp4")
-    #save_frames("./tdata/test_Trim_Trim.mp4")
-
+    video = cv2.VideoWriter(savepath + ".avi",cv2.VideoWriter_fourcc(*"MJPG"),2,(1920,1080))
+    for i in range(bbox.shape[0]):
+        img = cv2.imread(clippath + "/data/"+ extract(clippath) + "#" + str(i) + ".png",1)
+        if gt.mask[i, 0] == False:
+            img = cv2.rectangle(img,(int(gt[i,0]),int(gt[i,1])),(int(gt[i,2]),int(gt[i,3])), (0,255,0),2) #gt
+        if bbox.mask[i, 0] == False:
+            img = cv2.rectangle(img,(int(bbox[i,0]),int(bbox[i,1])),(int(bbox[i,2]),int(bbox[i,3])), (255,255,0),2) #yolo
+        if kal.mask[i,0] == False:
+            img = cv2.rectangle(img,(int(kal[i,0]),int(kal[i,1])),(int(kal[i,2]),int(kal[i,3])), (255,0,255),3) #kalman
+        cv2.putText(img, "Ground Truth", (10,700),  cv2.FONT_HERSHEY_SIMPLEX, 3, (0,255,0),4)
+        cv2.putText(img, "YOLOv3", (10,800),  cv2.FONT_HERSHEY_SIMPLEX, 3, (255,255,0),4)
+        cv2.putText(img, "Kalman", (10,900),  cv2.FONT_HERSHEY_SIMPLEX, 3, (255,0,255),4)
+        video.write(img)
+    video.release()
 
