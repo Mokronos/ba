@@ -2,10 +2,10 @@ import numpy as np
 import math
 import sys
 import os
+import shutil
 import matplotlib.pyplot as plt
-import matplotlib.mlab as mlab
 import cv2
-
+import scipy
 np.set_printoptions(threshold=sys.maxsize, suppress=True)
 
 
@@ -391,6 +391,23 @@ def norm(center1, center2):
 
     return distance
 
+#transforms corner representation into coordinates of optical flow points (topleftx, toplefty, toprightx, toprighty)
+def createofgt(gtcor):
+    ofgt = gtcor.copy()
+    for i in range(gtcor.shape[0]):
+        if gtcor.mask[i,0] == False:
+            ofgt[i,0] = gtcor[i,0]
+            ofgt[i,1] = gtcor[i,1]
+            ofgt[i,2] = gtcor[i,2]
+            ofgt[i,3] = gtcor[i,1]
+    return ofgt
+
+def connectleftright(left, right):
+
+    connected = ma.concatenate([left,right], axis = 1)
+
+    return connected
+
 #calculate width and height from bbox
 def widthheight(bbox):
     width = bbox[2] - bbox[0]
@@ -442,65 +459,129 @@ def squisharray(marr):
 
     return newmarr
 
-#compare gt with cleaned detection and return error (input coordinates --> output masked array with errors instead of coordinates) 
+#compare gt with cleaned detection and return error (input coordinates --> output masked array with errors instead of coordinates) error = bbox - gt
 def error(bbox, gt):
+    bboxx = bbox.copy()
     for i in range(np.shape(bbox)[0]):
         #if bbox at frame i is masked --> no detection there to calculate error from --> mask error of that frame
-        if bbox[i,0] is not ma.masked:
-            bbox[i,:] = np.subtract(bbox[i,:],gt[i,:])
+        if bboxx[i,0] is not ma.masked:
+            bboxx[i,:] = np.subtract(bboxx[i,:],gt[i,:])
         else:
-            bbox[i,:] = ma.masked
+            bboxx[i,:] = ma.masked
 
-    err = bbox
-    return err
+    return bboxx
+
+def errortime(gt, bbox):
+
+    c = lastindex(gt)
+
+    errormem = np.zeros((c,gt.shape[1]))
+
+    for i in range(c):
+        singleerror = bbox[i,:] - gt[i,:]
+        errormem[i,:] = singleerror
+
+    return errormem
+    
+def calcrmseot(gt, bbox):
+    c = lastindex(gt)
+    rmseot = np.zeros((c,gt.shape[1]))
+    for i in range(c):
+        for j in range(gt.shape[1]):
+            rmseot[i,j] = calcrmsesingle(gt[:i+1,j], bbox[:i+1,j])
+
+    return rmseot[-1], rmseot
+
+def calcrmse(gt, bbox):
+    rmse = bbox-gt
+    rmse = rmse**2
+    rmse = rmse.mean(axis = 0)
+    return rmse**0.5
+
+
+def calcrmsesingle(gt, bbox):
+    rmse = bbox-gt
+    rmse = rmse**2
+    rmse = rmse.mean()
+    return rmse**0.5
         
 #plot histogram for errors(nx5 list with error for 4 dimensions {n = frames})
 #representation is parameter for kalman filter representation with aspect ratio --> need different y and x axis for graph
-#TODO improve legend
-def hist(error, representation, binsize,title, subtitles, xlabel, ylabel, savepath):
+def hist(error, representation, xlabel,ylabel, savepath):
 
-    fig, axs = plt.subplots(2,2)
-    fig.suptitle(title)
-    axs = axs.flatten()
-    membins = []
-    memrange = []
-    
-    #figure out max range needed so that all 4 plots have same range and include all values --> make multiple of binsize so that it looks clean
-    for i in range(np.shape(error)[1]):
-        membins.append(abs(max(error[:,i]) - min(error[:,i])))
-        memrange.append(max(abs(error[:,i])))
-    maxbins = int(max(membins))
-    maxrange = int(max(memrange)//binsize * binsize + binsize)
-    maxbins = maxrange*2//binsize
-    
+
     #define things for gauss function
-    t = np.linspace(-maxrange,maxrange,maxrange*2 +1)
-    mean, std = stats(error)
+    mean, std, nbr = stats(error)
 
+    mara = 200
+    maxbins = int(round(nbr**0.5)*2)
+
+    
     #plot
     for i in range(np.shape(error)[1]):
-        axs[i].hist(error[:,i],bins = maxbins,range = (-maxrange,maxrange), normed = True) 
-        axs[i].set(title =  subtitles[i])
-        axs[i].set(xlabel = xlabel[i], ylabel = ylabel[i])
-        #axs[i].set(yticks = np.linspace(0,0.05,6))
-        axs[i].set(xticks = range(-maxrange,maxrange+1,binsize*4))
-        #plt gaussian over hist
-        axs[i].plot(t, mlab.normpdf(t, mean[i], std[i]))
-
-    if representation == "asp":
-        t = np.linspace(-1,1,100)
-        axs[3].clear()
-        axs[3].hist(error[:,3],bins = maxbins,range = (-1,1), normed = True) 
-        axs[3].set(title =  subtitles[3])
-        axs[3].set(xlabel = "aspect ratio", ylabel = ylabel[3])
-        #axs[3].set(xticks = np.linspace(-1,1,5))
-        #axs[3].set(xlim = [-1,1])
-        axs[3].plot(t, mlab.normpdf(t, mean[3], std[3]))
 
 
-    plt.tight_layout()
-    plt.savefig(savepath + ".pdf")
-    plt.savefig(savepath + ".png")
+        if representation == "asp" and i==3:
+            t = np.linspace(-2,2,200)
+            fig, ax = plt.subplots()
+            plt.hist(error[:,3],bins = maxbins,range = (-1,1), density = True) 
+            #plt.title(subtitles[3])
+            plt.xlabel(xlabel[i])
+            plt.ylabel(ylabel[3])
+            plt.xticks(np.linspace(-2,2,11))
+            plt.plot(t, scipy.stats.norm.pdf(t, mean[3], std[3]))
+
+            textstr = '\n'.join((
+                r'$\mu=%.2f$' % (mean[3], ),
+                r'$\sigma=%.2f$' % (std[3], ),
+                r'n=%d' % (nbr, )))
+            
+            plt.text(0.05, 0.95, textstr, transform = ax.transAxes, verticalalignment = "top")
+        else:
+
+            t = np.linspace(-mara,mara,1000)
+            fig, ax = plt.subplots()
+            plt.hist(error[:,i],bins = maxbins,range = (-mara,mara), density = True) 
+            #plt.title(subtitles[i])
+            plt.xlabel(xlabel[i])
+            plt.ylabel(ylabel[i])
+            #axs[i].set(yticks = np.linspace(0,0.05,6))
+            plt.xticks(range(-mara,mara+1,40))
+            #plt gaussian over hist
+            plt.plot(t, scipy.stats.norm.pdf(t, mean[i], std[i]))
+
+            textstr = '\n'.join((
+                r'$\mu=%.2f$' % (mean[i], ),
+                r'$\sigma=%.2f px$' % (std[i], ),
+                r'n=%d' % (nbr, )))
+            
+            plt.text(0.05, 0.95, textstr, transform = ax.transAxes, verticalalignment = "top")
+
+
+        plt.grid()
+        plt.tight_layout()
+    
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath + xlabel[i].split()[0] + ".pdf")
+        plt.close("all")
+
+def writeapp(filepath, textinput):
+
+    with open(filepath, "a+") as text:
+
+        text.write(textinput)
+
+
+
+def correctmean(bbox, mean):
+
+    corrbbox = bbox.copy() 
+
+    for i in range(corrbbox.shape[0]):
+        if corrbbox.mask[i,0] == False:
+            corrbbox[i,:] = corrbbox[i,:] - mean
+
+    return corrbbox
      
 #takes masked array with errors and total error (default = empty) and appends it --> returns mxn list with errors TODO if conf error is neeeded --> dont delete 2nd column
 def apperror(error, toterror):
@@ -516,48 +597,265 @@ def apperror(error, toterror):
     
     return toterror
     
-    
-    
-#plot groundtruth and detections over time(frames) --> input: xmin,ymin,xmax,ymax (masked array)
-#TODO make axis scales better depending on how it works with many frames
-def timeplot(bbox,title, ylim, subtitles, xlabel, ylabel, savepath):
-    fig, axs = plt.subplots(2,2)
-    fig.suptitle(title)
-    axs = axs.flatten()
+#plot groundtruth or detections over time(frames) --> input: xmin,ymin,xmax,ymax (masked array)
+def timeplot(bbox,ylabel, xlabel, savepath):
     for i in range(np.shape(bbox)[1]):
-        axs[i].scatter(range(np.shape(bbox)[0]), bbox[:,i])
-        axs[i].set(ylim = ylim[i])
-        axs[i].set(title = subtitles[i])
-        axs[i].set(xlabel = xlabel[i], ylabel = ylabel[i])
+        plt.scatter(range(np.shape(bbox)[0]), bbox[:,i])
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel(xlabel[i])
+        plt.ylabel(ylabel[i])
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath +ylabel[i].split()[0]+ ".pdf")
+        plt.close("all")
+
+#plotting bbox and groundtruth (for example) in 1 plot 
+def timeplot2(bbox,bbox2, ylabel, xlabel, savepath, colors = ["green","cyan"],legendlabels = ["Ground Truth","Netzwerk"]):
+    for i in range(np.shape(bbox)[1]):
+        c = lastindex(bbox)
+        plt.plot(range(c), bbox[:c,i], "--", color = colors[0], label = legendlabels[0])
+        plt.scatter(range(c), bbox2[:c,i], marker = "x", color = colors[1], label =legendlabels[1])
+        plt.legend()
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel(xlabel[i])
+        plt.ylabel(ylabel[i])
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath +ylabel[i].split()[0] + ".pdf")
+        plt.close("all")
+
+
+#plotting bbox and groundtruth (for example) in 1 plot 
+def timeplot3(bbox,bbox2,bbox3,ylabel, xlabel, savepath, colors = ["green","cyan","magenta"],legendlabels = ["Ground Truth","Netzwerk","Kalman Filter"]):
+
+    c = lastindex(bbox)
+    for i in range(np.shape(bbox)[1]):
+         
+        plt.plot(range(c), bbox[:c,i], "--", color = colors[0], label = legendlabels[0])
+        plt.scatter(range(c), bbox2[:c,i], marker = "x", color = colors[1], label =legendlabels[1])
+        plt.plot(range(c), bbox3[:c,i], "-", color = colors[2], label =legendlabels[2])
+        plt.legend()
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel(xlabel[i])
+        plt.ylabel(ylabel[i])
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath +ylabel[i].split()[0] + ".pdf")
+        plt.close("all")
+
+# plot error of 1 clip
+def errorplot(bbox,bbox2, ylabel, xlabel, savepath, colors = ["black"],legendlabels = ["Schätzung"]):
+    for i in range(np.shape(bbox)[1]):
+        c = lastindex(bbox)
+        error = errortime(bbox, bbox2)
+        plt.plot(range(c), error[:,i], "-o", color = colors[0], label = legendlabels[0])
+        plt.legend()
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel(xlabel[i])
+        plt.ylabel(ylabel[i])
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath + ylabel[i].split()[0] + ".pdf")
+        plt.close("all")
+
+# plot rmse of 1 clip
+def rmseplot(bbox,bbox2, ylabel, xlabel, savepath, colors = ["black"],legendlabels = ["Schätzung"]):
+    for i in range(np.shape(bbox)[1]):
+        c = lastindex(bbox)
+        errorend, error = calcrmseot(bbox, bbox2)
+        fig, ax = plt.subplots()
+        plt.plot(range(c), error[:,i], "-o", color = colors[0], label = legendlabels[0])
+        plt.legend()
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel(xlabel[i])
+        plt.ylabel(ylabel[i])
+        textstr = '\n'.join((
+                r'$total rmse=%.2f px$' % (errorend[i], ),
+                ))
+        plt.text(0.05, 0.85, textstr, transform = ax.transAxes, verticalalignment = "top")
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath + ylabel[i].split()[0] + ".pdf")
+        plt.close("all")
+
+
+#plot iou over time
+def plotiou(bbox, bbox2, ylabel, xlabel, savepath, colors = ["black"],legendlabels = ["Schätzung"]):
+    c = lastindex(bbox)
+    ioutime = ioucliptime(bbox,bbox2)
+    iouavg = iouclip(bbox,bbox2)
+    fig, ax = plt.subplots()
+    plt.plot(range(c), ioutime, "-o", color = colors[0], label = legendlabels[0])
+    plt.legend()
+    #plt.ylim(ylim[i])
+    #plt.title(subtitles[i])
+    plt.xlabel(xlabel[0])
+    plt.ylabel(ylabel[0])
+    textstr = '\n'.join((
+                r'$\mu=%.2f$' % (np.mean(iouavg), ),
+                ))
+    plt.text(0.10, 0.95, textstr, transform = ax.transAxes, verticalalignment = "top")
+    plt.grid()
     plt.tight_layout()
+    #plt.savefig(savepath + subtitles[i] + ".pdf")
     plt.savefig(savepath + ".pdf")
-    plt.savefig(savepath + ".png")
-        
+    plt.close("all")
+
+
+
+def calcprocessstd(gt):
+
+    c = lastindex(gt)
+    errors = []
+    init = gt[0,:]
+    for i in range(1, c):
+        errors.append(gt[i,:] - init)
+
+    return np.mean(errors, axis = 0), np.std(errors, axis = 0)
+
+
+
+#plotting P matrix entries
+def plotp(memp,end,savepath):
+
+    for i in range(np.shape(memp)[1]):
+        plt.scatter(range(end), memp[:end,i], marker = "x")
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel("Frame [k]")
+        plt.ylabel("P[" + str(i) + ", " + str(i) + "] [$\mathregular{px^2}$]")
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath + "P" + str(i) + ".pdf")
+        plt.close("all")
+
+#return "end of clip" (take gt and calculate the index of the last non-masked array)
+def lastindex(gt):
+    c = 0
+    for i in range(gt.shape[0]):
+        if gt.mask[i,0] == False:
+            c = i
+
+    return c 
+
+#takes bbox masked array and returns index of the first detection
+def firstindex(bbox):
+
+    s = 0
+
+    for i in range(bbox.shape[0]):
+        if bbox.mask[i,0] == False:
+            s = i
+            return s
+
+def cutonlydet(gt, bbox):
+
+    c = lastindex(bbox)
+    start = firstindex(bbox)
+    return
+
+#plotting K matrix entries
+def plotk(memk,end,savepath):
+
+    for i in range(np.shape(memk)[1]):
+        plt.scatter(range(end), memk[:end,i], marker = "x")
+        #plt.ylim(ylim[i])
+        #plt.title(subtitles[i])
+        plt.xlabel("Frame [k]")
+        plt.ylabel("K[" + str(i) + ", " + str(i) + "]")
+        plt.grid()
+        plt.tight_layout()
+        #plt.savefig(savepath + subtitles[i] + ".pdf")
+        plt.savefig(savepath + "K" + str(i) + ".pdf")
+        plt.close("all")
+def deletefile(path):
+    try:
+        shutil.rmtree(path)
+    except OSError as e:
+        print ("Error: %s - %s." % (e.filename, e.strerror))
+
+
+
+#deletes files from last run to delete extra folders if u rename something
+def delfolders(mainvid):
+    try:
+        shutil.rmtree("./data/" + mainvid + "/macroanalysis")
+    except OSError as e:
+        print ("Error: %s - %s." % (e.filename, e.strerror))
+   
+    for i in os.listdir("./data/" + mainvid):
+        try:
+            shutil.rmtree("./data/" + mainvid + "/" + i + "/analysis")
+        except OSError as e:
+            print ("Error: %s - %s." % (e.filename, e.strerror))
+        try:
+            shutil.rmtree("./data/" + mainvid + "/" + i + "/algorithms")
+        except OSError as e:
+            print ("Error: %s - %s." % (e.filename, e.strerror))
 
 #calc std and mean of given array(input = n x 4 array of errors)
 def stats(array):
     mean = np.mean(array, axis = 0)
     std = np.std(array, axis = 0)
-    return mean, std
+    return mean, std, len(array)
 
-#iou average over clip (only when detection exists)
+#iou average over clip 
 def iouclip(bbox, gt):
     ioumem = []
     for i in range(bbox.shape[0]):
         if bbox.mask[i,0] == False and gt.mask[i,0] == False:
             ioumem.append(iou(bbox[i,:],gt[i,:]))
-    return np.mean(ioumem)
+    return ioumem
+
+
+#iou average over clip (but only in the frames where yolo orignially detected a object) to better evaluate  if kalman filter improves detections in frames where there is a measurement
+def ioucliplim(bbox, gt, det):
+
+    ioumem = []
+    for i in range(det.shape[0]):
+        if gt.mask[i,0] == False and det.mask[i,0] == False and bbox.mask[i,0] == False:
+            ioumem.append(iou(bbox[i,:], gt[i,:]))
+
+    return ioumem
+    
+def ioucliptime(gt, bbox):
+
+    c = lastindex(gt)
+
+    ioumem = np.zeros((c))
+
+    for i in range(c):
+        singleiou = iou(gt[i,:], bbox[i,:])
+        ioumem[i] = singleiou
+
+    return ioumem
+    
+
 
 #transform array from corners(xmin,ymin,xmax,ymax) to aspect(centerx,centery,width,aspect ratio) representation
 def corasp(array):
 
     array = array.copy()
+    disp = array.copy()
 
     #transform to center repr. first so its easier
     array = corcen(array)
     
     for i in range(array.shape[0]):
         if array.mask[i,0] == False:
+
+            #calculate aspect ratio --> = width/height
             ar = array[i,2]/array[i,3]
             array[i, 3] = ar
             
@@ -609,11 +907,32 @@ def aspcor(array):
 
     return cencor(array)
 
-def viskal(bbox, gt, kal,clippath, savepath):
+#creates fake detections depended on ground truth + errors according to normal distribution with given mean and std 
+def createfakedet(gt, std):
+
+    np.random.seed(0)
+    
+    det = gt.copy()
+    
+    for i in range(det.shape[0]):
+
+        if det.mask[i,0] == False:
+
+            for j in range(det.shape[1]):
+
+                err = np.random.normal(0,std[j])
+                det[i,j] = gt[i,j] + err
+
+
+    return det
+
+
+#creates video of kalman filter on 1 clip with gt, yolo, and kalman filter bboxes
+def viskal(bbox, gt, kal,clippath, savepath, start = 0):
 
     video = cv2.VideoWriter(savepath + ".avi",cv2.VideoWriter_fourcc(*"MJPG"),2,(1920,1080))
     for i in range(bbox.shape[0]):
-        img = cv2.imread(clippath + "/data/"+ extract(clippath) + "#" + str(i) + ".png",1)
+        img = cv2.imread(clippath + "/data/"+ extract(clippath) + "#" + str(i + start) + ".png",1)
         if gt.mask[i, 0] == False:
             img = cv2.rectangle(img,(int(gt[i,0]),int(gt[i,1])),(int(gt[i,2]),int(gt[i,3])), (0,255,0),2) #gt
         if bbox.mask[i, 0] == False:
@@ -623,6 +942,31 @@ def viskal(bbox, gt, kal,clippath, savepath):
         cv2.putText(img, "Ground Truth", (10,700),  cv2.FONT_HERSHEY_SIMPLEX, 3, (0,255,0),4)
         cv2.putText(img, "YOLOv3", (10,800),  cv2.FONT_HERSHEY_SIMPLEX, 3, (255,255,0),4)
         cv2.putText(img, "Kalman", (10,900),  cv2.FONT_HERSHEY_SIMPLEX, 3, (255,0,255),4)
+        cv2.putText(img, "Frame: " + str(i), (10,100),  cv2.FONT_HERSHEY_SIMPLEX, 3, (0,255,0),4)
         video.write(img)
     video.release()
+
+
+#draws goodfeaturestotrack on specified frame and saves it
+def drawgoodpoints(clippath, framenumber, savepath):
+
+    feature_params = dict( maxCorners = 100,
+                           qualityLevel = 0.3,
+                           minDistance = 5,
+                           blockSize = 5 )
+
+
+    img = cv2.imread(clippath + "/data/"+ extract(clippath) + "#" + str(framenumber) + ".png",1)
+
+    imggray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    points = cv2.goodFeaturesToTrack(imggray, mask = None, **feature_params)
+
+    for j in range(points.shape[0]):
+
+        imgpoints = cv2.circle(img, tuple(map(int,(points[j,0,:]))), 2, (255,0,255), 2)
+    #img = cv2.circle(img,(int(bbox[0]),int(bbox[1])),(int(bbox[2]),int(bbox[3])), (255,255,0),3) #yolo
+    cv2.imwrite(savepath + "frame" + str(framenumber) + ".png", imgpoints)
+    
+
 
